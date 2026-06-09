@@ -17,6 +17,15 @@ const WASM_CDN =
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
+type DurationMode = 30 | 60 | 120 | null;
+
+const DURATION_OPTIONS: { value: DurationMode; label: string }[] = [
+  { value: null, label: "ไม่จำกัด" },
+  { value: 30, label: "30 วิ" },
+  { value: 60, label: "60 วิ" },
+  { value: 120, label: "120 วิ" },
+];
+
 const STATUS_LABELS: Record<DetectionStatus, string> = {
   idle: "พร้อมเริ่ม",
   pose_missing: "ให้เห็นตัวและแขนทั้งสองข้างในกล้อง",
@@ -26,6 +35,12 @@ const STATUS_LABELS: Record<DetectionStatus, string> = {
   counted: "+1",
 };
 
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 export default function SixSevenCounter() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -33,6 +48,7 @@ export default function SixSevenCounter() {
   const detectorRef = useRef(new SixSevenDetector());
   const animFrameRef = useRef<number>(0);
   const lastVideoTimeRef = useRef(-1);
+  const isTimeUpRef = useRef(false);
 
   const [count, setCount] = useState(0);
   const [isActive, setIsActive] = useState(false);
@@ -40,6 +56,9 @@ export default function SixSevenCounter() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<DetectionStatus>("idle");
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [durationMode, setDurationMode] = useState<DurationMode>(null);
+  const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
+  const [isTimeUp, setIsTimeUp] = useState(false);
 
   const showFullscreen = isFullscreen && isActive;
 
@@ -87,12 +106,15 @@ export default function SixSevenCounter() {
       const result = landmarker.detectForVideo(video, performance.now());
       drawResults(result, video.videoWidth, video.videoHeight);
 
-      const pose = result.landmarks[0] ?? null;
-      const { counted, status: nextStatus } = detectorRef.current.process(pose);
-      setStatus(nextStatus);
+      if (!isTimeUpRef.current) {
+        const pose = result.landmarks[0] ?? null;
+        const { counted, status: nextStatus } =
+          detectorRef.current.process(pose);
+        setStatus(nextStatus);
 
-      if (counted) {
-        setCount((c) => c + 1);
+        if (counted) {
+          setCount((c) => c + 1);
+        }
       }
     }
 
@@ -109,6 +131,9 @@ export default function SixSevenCounter() {
     }
     setIsActive(false);
     setIsFullscreen(false);
+    setIsTimeUp(false);
+    isTimeUpRef.current = false;
+    setTimeRemaining(null);
     setStatus("idle");
   }, []);
 
@@ -163,6 +188,10 @@ export default function SixSevenCounter() {
         canvas.height = video.videoHeight;
       }
 
+      setCount(0);
+      setIsTimeUp(false);
+      isTimeUpRef.current = false;
+      setTimeRemaining(durationMode);
       detectorRef.current.reset();
       setIsActive(true);
       setStatus("ready");
@@ -175,13 +204,41 @@ export default function SixSevenCounter() {
     } finally {
       setIsLoading(false);
     }
-  }, [detectFrame, stopCamera]);
+  }, [detectFrame, stopCamera, durationMode]);
 
   const handleReset = () => {
     setCount(0);
+    setIsTimeUp(false);
+    isTimeUpRef.current = false;
+    setTimeRemaining(durationMode);
     detectorRef.current.reset();
     setStatus(isActive ? "ready" : "idle");
   };
+
+  const handlePlayAgain = () => {
+    handleReset();
+  };
+
+  useEffect(() => {
+    isTimeUpRef.current = isTimeUp;
+  }, [isTimeUp]);
+
+  useEffect(() => {
+    if (!isActive || durationMode === null || isTimeUp) return;
+
+    const id = window.setInterval(() => {
+      setTimeRemaining((prev) => {
+        if (prev === null || prev <= 1) {
+          setIsTimeUp(true);
+          setStatus("ready");
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(id);
+  }, [isActive, durationMode, isTimeUp]);
 
   useEffect(() => {
     if (!showFullscreen) return;
@@ -212,16 +269,51 @@ export default function SixSevenCounter() {
     };
   }, []);
 
+  const timerBadge =
+    isActive && durationMode !== null && timeRemaining !== null ? (
+      <p
+        className={`mb-2 text-sm font-medium tabular-nums ${
+          showFullscreen ? "text-white/90 drop-shadow" : "text-orange-500"
+        } ${timeRemaining <= 10 ? "animate-pulse" : ""}`}
+      >
+        {isTimeUp ? "หมดเวลา!" : formatTime(timeRemaining)}
+      </p>
+    ) : null;
+
   const counterBlock = (
     <div className="text-center">
+      {timerBadge}
       <AnimatedCounter value={count} variant={showFullscreen ? "overlay" : "default"} />
       <p
         className={`mt-2 text-sm ${
           showFullscreen ? "text-white/80 drop-shadow" : "text-zinc-400"
         }`}
       >
-        {STATUS_LABELS[status]}
+        {isTimeUp ? `คะแนนรวม ${count}` : STATUS_LABELS[status]}
       </p>
+    </div>
+  );
+
+  const durationSelector = (
+    <div className="flex flex-col gap-2">
+      <p className="text-center text-sm text-zinc-500">เลือกเวลาเล่น</p>
+      <div className="grid grid-cols-4 gap-2">
+        {DURATION_OPTIONS.map((option) => (
+          <button
+            key={option.label}
+            type="button"
+            disabled={isActive}
+            onClick={() => setDurationMode(option.value)}
+            className={`rounded-full py-2.5 text-sm font-medium transition-colors disabled:opacity-60 ${
+              durationMode === option.value
+                ? "bg-orange-500 text-white"
+                : "border border-zinc-200 text-zinc-600 hover:bg-zinc-50"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 
@@ -285,6 +377,34 @@ export default function SixSevenCounter() {
           </div>
         )}
 
+        {isTimeUp && isActive && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="px-6 text-center">
+              <p className="text-2xl font-semibold text-white">หมดเวลา!</p>
+              <p className="mt-2 text-6xl font-bold tabular-nums text-orange-400">
+                {count}
+              </p>
+              <p className="mt-1 text-sm text-white/70">คะแนนรวม</p>
+              <div className="mt-6 flex justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={handlePlayAgain}
+                  className="rounded-full bg-orange-500 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-orange-600"
+                >
+                  เล่นอีกครั้ง
+                </button>
+                <button
+                  type="button"
+                  onClick={stopCamera}
+                  className="rounded-full border border-white/30 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-white/10"
+                >
+                  หยุด
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {isActive && (
           <button
             type="button"
@@ -345,6 +465,7 @@ export default function SixSevenCounter() {
 
       {!showFullscreen && (
         <>
+          {!isActive && durationSelector}
           {counterBlock}
 
           {error && (
@@ -355,22 +476,41 @@ export default function SixSevenCounter() {
 
           <div className="flex gap-3">
             {isActive ? (
-              <>
-                <button
-                  type="button"
-                  onClick={stopCamera}
-                  className="flex-1 rounded-full border border-zinc-200 py-3 text-sm font-medium transition-colors hover:bg-zinc-50"
-                >
-                  หยุด
-                </button>
-                <button
-                  type="button"
-                  onClick={toggleFullscreen}
-                  className="rounded-full border border-zinc-200 px-5 py-3 text-sm font-medium transition-colors hover:bg-zinc-50"
-                >
-                  เต็มจอ
-                </button>
-              </>
+              isTimeUp ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handlePlayAgain}
+                    className="flex-1 rounded-full bg-orange-500 py-3 text-sm font-medium text-white transition-colors hover:bg-orange-600"
+                  >
+                    เล่นอีกครั้ง
+                  </button>
+                  <button
+                    type="button"
+                    onClick={stopCamera}
+                    className="rounded-full border border-zinc-200 px-6 py-3 text-sm font-medium transition-colors hover:bg-zinc-50"
+                  >
+                    หยุด
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={stopCamera}
+                    className="flex-1 rounded-full border border-zinc-200 py-3 text-sm font-medium transition-colors hover:bg-zinc-50"
+                  >
+                    หยุด
+                  </button>
+                  <button
+                    type="button"
+                    onClick={toggleFullscreen}
+                    className="rounded-full border border-zinc-200 px-5 py-3 text-sm font-medium transition-colors hover:bg-zinc-50"
+                  >
+                    เต็มจอ
+                  </button>
+                </>
+              )
             ) : (
               <button
                 type="button"
