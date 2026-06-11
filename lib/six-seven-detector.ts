@@ -13,9 +13,12 @@ const RIGHT_SHOULDER = 12;
 const LEFT_WRIST = 15;
 const RIGHT_WRIST = 16;
 
-const VISIBILITY_MIN = 0.5;
-const RAISE_MARGIN = 0.04;
-const MIN_FRAMES_BETWEEN_COUNTS = 6;
+const VISIBILITY_MIN = 0.4;
+/** ข้อมือต้องสูงกว่าไหล่เท่านี้ถึงถือว่า "ยก" */
+const RAISE_THRESHOLD = 0.02;
+/** ข้อมือต่ำกว่าเกณฑ์นี้ถึงถือว่า "ลง" พร้อมนับครั้งใหม่ */
+const LOWER_THRESHOLD = 0.008;
+const MIN_FRAMES_BETWEEN_COUNTS = 2;
 
 function isVisible(lm: PoseLandmark): boolean {
   return (lm.visibility ?? 1) >= VISIBILITY_MIN;
@@ -23,7 +26,12 @@ function isVisible(lm: PoseLandmark): boolean {
 
 function isArmRaised(wrist: PoseLandmark, shoulder: PoseLandmark): boolean {
   if (!isVisible(wrist) || !isVisible(shoulder)) return false;
-  return wrist.y < shoulder.y - RAISE_MARGIN;
+  return wrist.y < shoulder.y - RAISE_THRESHOLD;
+}
+
+function isArmLowered(wrist: PoseLandmark, shoulder: PoseLandmark): boolean {
+  if (!isVisible(wrist) || !isVisible(shoulder)) return true;
+  return wrist.y >= shoulder.y - LOWER_THRESHOLD;
 }
 
 export class SixSevenDetector {
@@ -57,17 +65,16 @@ export class SixSevenDetector {
       return { counted: false, status: this.lastStatus };
     }
 
-    const leftUp = isArmRaised(
-      landmarks[LEFT_WRIST],
-      landmarks[LEFT_SHOULDER],
-    );
-    const rightUp = isArmRaised(
-      landmarks[RIGHT_WRIST],
-      landmarks[RIGHT_SHOULDER],
-    );
+    const leftWrist = landmarks[LEFT_WRIST];
+    const leftShoulder = landmarks[LEFT_SHOULDER];
+    const rightWrist = landmarks[RIGHT_WRIST];
+    const rightShoulder = landmarks[RIGHT_SHOULDER];
 
-    if (!leftUp) this.leftWasUp = false;
-    if (!rightUp) this.rightWasUp = false;
+    const leftUp = isArmRaised(leftWrist, leftShoulder);
+    const rightUp = isArmRaised(rightWrist, rightShoulder);
+
+    if (isArmLowered(leftWrist, leftShoulder)) this.leftWasUp = false;
+    if (isArmLowered(rightWrist, rightShoulder)) this.rightWasUp = false;
 
     if (!leftUp && !rightUp) {
       this.lastStatus = "ready";
@@ -102,9 +109,6 @@ export class SixSevenDetector {
       this.lastStatus = "counted";
       return { counted: true, status: this.lastStatus, raisedArm: "right" };
     }
-
-    this.leftWasUp = leftUp;
-    this.rightWasUp = rightUp;
 
     return { counted: false, status: this.lastStatus };
   }
