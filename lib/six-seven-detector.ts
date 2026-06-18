@@ -10,28 +10,83 @@ export type DetectionStatus =
 
 const LEFT_SHOULDER = 11;
 const RIGHT_SHOULDER = 12;
+const LEFT_ELBOW = 13;
+const RIGHT_ELBOW = 14;
 const LEFT_WRIST = 15;
 const RIGHT_WRIST = 16;
+const LEFT_HIP = 23;
+const RIGHT_HIP = 24;
 
-const VISIBILITY_MIN = 0.4;
-/** ข้อมือต้องสูงกว่าไหล่เท่านี้ถึงถือว่า "ยก" */
-const RAISE_THRESHOLD = 0.02;
-/** ข้อมือต่ำกว่าเกณฑ์นี้ถึงถือว่า "ลง" พร้อมนับครั้งใหม่ */
-const LOWER_THRESHOLD = 0.008;
+const VISIBILITY_MIN = 0.25;
+const WRIST_VISIBILITY_MIN = 0.2;
+/** สัดส่วนของความสูงลำตัว — ยกแขนเกินเท่านี้ถือว่า "ยก" */
+const RAISE_RATIO = 0.1;
+/** สัดส่วนของความสูงลำตัว — ลงต่ำกว่าเท่านี้ถือว่า "ลง" */
+const LOWER_RATIO = 0.04;
 const MIN_FRAMES_BETWEEN_COUNTS = 2;
 
-function isVisible(lm: PoseLandmark): boolean {
-  return (lm.visibility ?? 1) >= VISIBILITY_MIN;
+function visibility(lm: PoseLandmark): number {
+  return lm.visibility ?? 1;
 }
 
-function isArmRaised(wrist: PoseLandmark, shoulder: PoseLandmark): boolean {
-  if (!isVisible(wrist) || !isVisible(shoulder)) return false;
-  return wrist.y < shoulder.y - RAISE_THRESHOLD;
+function isVisible(lm: PoseLandmark, min = VISIBILITY_MIN): boolean {
+  return visibility(lm) >= min;
 }
 
-function isArmLowered(wrist: PoseLandmark, shoulder: PoseLandmark): boolean {
-  if (!isVisible(wrist) || !isVisible(shoulder)) return true;
-  return wrist.y >= shoulder.y - LOWER_THRESHOLD;
+/** คำนวณขนาดร่างกายในภาพ — ปรับเกณฑ์อัตโนมัติตามระยะ (ใกล้/ไกล) */
+function getBodyScale(landmarks: PoseLandmark[]): number {
+  const leftTorso = Math.abs(landmarks[LEFT_HIP].y - landmarks[LEFT_SHOULDER].y);
+  const rightTorso = Math.abs(landmarks[RIGHT_HIP].y - landmarks[RIGHT_SHOULDER].y);
+  const shoulderWidth = Math.abs(
+    landmarks[RIGHT_SHOULDER].x - landmarks[LEFT_SHOULDER].x,
+  );
+
+  const torso =
+    leftTorso > 0 && rightTorso > 0
+      ? (leftTorso + rightTorso) / 2
+      : Math.max(leftTorso, rightTorso);
+
+  return Math.max(torso, shoulderWidth * 0.55, 0.04);
+}
+
+/** ใช้ข้อมือเป็นหลัก ถ้ามองไม่ชัดใช้ข้อศอกแทน (มัก detect ได้ดีกว่าตอนอยู่ไกล) */
+function getArmPoint(
+  wrist: PoseLandmark,
+  elbow: PoseLandmark,
+): PoseLandmark | null {
+  const wristOk = isVisible(wrist, WRIST_VISIBILITY_MIN);
+  const elbowOk = isVisible(elbow, VISIBILITY_MIN);
+
+  if (wristOk) return wrist;
+  if (elbowOk) return elbow;
+  return null;
+}
+
+function isArmRaised(
+  arm: PoseLandmark,
+  shoulder: PoseLandmark,
+  scale: number,
+): boolean {
+  if (!isVisible(shoulder)) return false;
+  const raiseThreshold = scale * RAISE_RATIO;
+  return arm.y < shoulder.y - raiseThreshold;
+}
+
+function isArmLowered(
+  arm: PoseLandmark,
+  shoulder: PoseLandmark,
+  scale: number,
+): boolean {
+  if (!isVisible(shoulder)) return true;
+  const lowerThreshold = scale * LOWER_RATIO;
+  return arm.y >= shoulder.y - lowerThreshold;
+}
+
+function hasUsablePose(landmarks: PoseLandmark[]): boolean {
+  return (
+    isVisible(landmarks[LEFT_SHOULDER]) ||
+    isVisible(landmarks[RIGHT_SHOULDER])
+  );
 }
 
 export class SixSevenDetector {
@@ -60,21 +115,35 @@ export class SixSevenDetector {
   } {
     this.framesSinceCount++;
 
-    if (!landmarks || landmarks.length < 17) {
+    if (!landmarks || landmarks.length < 25 || !hasUsablePose(landmarks)) {
       this.lastStatus = "pose_missing";
       return { counted: false, status: this.lastStatus };
     }
 
-    const leftWrist = landmarks[LEFT_WRIST];
+    const scale = getBodyScale(landmarks);
+
+    const leftArm = getArmPoint(landmarks[LEFT_WRIST], landmarks[LEFT_ELBOW]);
+    const rightArm = getArmPoint(landmarks[RIGHT_WRIST], landmarks[RIGHT_ELBOW]);
     const leftShoulder = landmarks[LEFT_SHOULDER];
-    const rightWrist = landmarks[RIGHT_WRIST];
     const rightShoulder = landmarks[RIGHT_SHOULDER];
 
-    const leftUp = isArmRaised(leftWrist, leftShoulder);
-    const rightUp = isArmRaised(rightWrist, rightShoulder);
+    const leftUp =
+      leftArm !== null && isArmRaised(leftArm, leftShoulder, scale);
+    const rightUp =
+      rightArm !== null && isArmRaised(rightArm, rightShoulder, scale);
 
-    if (isArmLowered(leftWrist, leftShoulder)) this.leftWasUp = false;
-    if (isArmLowered(rightWrist, rightShoulder)) this.rightWasUp = false;
+    if (
+      leftArm !== null &&
+      isArmLowered(leftArm, leftShoulder, scale)
+    ) {
+      this.leftWasUp = false;
+    }
+    if (
+      rightArm !== null &&
+      isArmLowered(rightArm, rightShoulder, scale)
+    ) {
+      this.rightWasUp = false;
+    }
 
     if (!leftUp && !rightUp) {
       this.lastStatus = "ready";

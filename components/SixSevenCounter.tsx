@@ -17,10 +17,11 @@ const WASM_CDN =
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
-type DurationMode = 30 | 60 | 120 | null;
+type DurationMode = 10 | 30 | 60 | 120 | null;
 
 const DURATION_OPTIONS: { value: DurationMode; label: string }[] = [
   { value: null, label: "ไม่จำกัด" },
+  { value: 10, label: "10 วิ" },
   { value: 30, label: "30 วิ" },
   { value: 60, label: "60 วิ" },
   { value: 120, label: "120 วิ" },
@@ -28,7 +29,7 @@ const DURATION_OPTIONS: { value: DurationMode; label: string }[] = [
 
 const STATUS_LABELS: Record<DetectionStatus, string> = {
   idle: "พร้อมเริ่ม",
-  pose_missing: "ให้เห็นตัวและแขนทั้งสองข้างในกล้อง",
+  pose_missing: "ให้เห็นไหล่และลำตัวชัดในกล้อง (ถอยห่างได้ แต่ต้องเห็นตัวครบ)",
   ready: "ยกแขนสลับซ้าย-ขวาเหนือไหล่",
   left_up: "แขนซ้ายยกแล้ว!",
   right_up: "แขนขวายกแล้ว!",
@@ -172,7 +173,11 @@ export default function SixSevenCounter() {
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: 640, height: 480 },
+        video: {
+          facingMode: "user",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
         audio: false,
       });
 
@@ -297,7 +302,7 @@ export default function SixSevenCounter() {
   const durationSelector = (
     <div className="flex flex-col gap-2">
       <p className="text-center text-sm text-zinc-500">เลือกเวลาเล่น</p>
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-5 gap-2">
         {DURATION_OPTIONS.map((option) => (
           <button
             key={option.label}
